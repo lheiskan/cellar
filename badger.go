@@ -1,15 +1,13 @@
 package cellar
 
 import (
-	"bytes"
 	"encoding/binary"
 	"log"
 
-	"github.com/abdullin/lex-go/tuple"
-	"github.com/abdullin/mdb"
-	"github.com/bmatsuo/lmdb-go/lmdb"
-	"github.com/bmatsuo/lmdb-go/lmdbscan"
+	"github.com/dgraph-io/badger"
 	proto "github.com/golang/protobuf/proto"
+	"github.com/lheiskan/lex-go/tuple"
+	"github.com/lheiskan/mdb"
 	"github.com/pkg/errors"
 )
 
@@ -22,31 +20,34 @@ const (
 	UserCheckpointTable byte = 6
 )
 
-func lmdbPutUserCheckpoint(tx *mdb.Tx, name string, pos int64) error {
+func badgerPutUserCheckpoint(tx *mdb.Tx, name string, pos int64) error {
 	key := mdb.CreateKey(UserCheckpointTable, name)
 
-	value, err := tx.PutReserve(key, 8)
+	value := make([]byte, 8)
+	binary.LittleEndian.PutUint64(value, uint64(pos))
+	err := tx.Tx.Set(key, value)
+	//value, err := tx.PutReserve(key, 8)
 	if err != nil {
 		return errors.Wrap(err, "PutReserve")
 	}
-	binary.LittleEndian.PutUint64(value, uint64(pos))
+	//binary.LittleEndian.PutUint64(value, uint64(pos))
 	return nil
 }
 
-func lmdbGetUserCheckpoint(tx *mdb.Tx, name string) (int64, error) {
+func badgerGetUserCheckpoint(tx *mdb.Tx, name string) (int64, error) {
 
 	key := mdb.CreateKey(UserCheckpointTable, name)
 	value, err := tx.Get(key)
+	if err == badger.ErrKeyNotFound {
+		return 0, nil
+	}
 	if err != nil {
 		return 0, errors.Wrap(err, "Get")
-	}
-	if len(value) == 0 {
-		return 0, nil
 	}
 	return int64(binary.LittleEndian.Uint64(value)), nil
 }
 
-func lmdbAddChunk(tx *mdb.Tx, chunkStartPos int64, dto *ChunkDto) error {
+func badgerAddChunk(tx *mdb.Tx, chunkStartPos int64, dto *ChunkDto) error {
 	key := mdb.CreateKey(ChunkTable, chunkStartPos)
 
 	if err := tx.PutProto(key, dto); err != nil {
@@ -57,40 +58,34 @@ func lmdbAddChunk(tx *mdb.Tx, chunkStartPos int64, dto *ChunkDto) error {
 	return nil
 }
 
-func lmdbListChunks(tx *mdb.Tx) ([]*ChunkDto, error) {
+func badgerListChunks(tx *mdb.Tx) ([]*ChunkDto, error) {
 
-	tpl := mdb.CreateKey(ChunkTable)
-
-	scanner := lmdbscan.New(tx.Tx, tx.DB)
-
-	defer scanner.Close()
-	scanner.Set(tpl, nil, lmdb.SetRange)
+	prefix := mdb.CreateKey(ChunkTable)
 
 	var chunks []*ChunkDto
-
-	for scanner.Scan() {
-		key := scanner.Key()
-
-		if !bytes.HasPrefix(key, tpl) {
-			break
-		}
-
+	opts := badger.DefaultIteratorOptions
+	opts.PrefetchSize = 100
+	it := tx.Tx.NewIterator(opts)
+	defer it.Close()
+	for it.Seek(prefix); it.ValidForPrefix(prefix); it.Next() {
+		item := it.Item()
+		k := item.Key()
 		var chunk = &ChunkDto{}
-		val := scanner.Val()
-		if err := proto.Unmarshal(val, chunk); err != nil {
-			return nil, errors.Wrapf(err, "Unmarshal %x at %x", val, key)
+		var v []byte
+		v, err := item.ValueCopy(v)
+		if err != nil {
+			return nil, errors.Wrap(err, "item.ValueCopy")
 		}
-
+		if err := proto.Unmarshal(v, chunk); err != nil {
+			return nil, errors.Wrapf(err, "Unmarshal %x at %x", v, k)
+		}
 		chunks = append(chunks, chunk)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, errors.Wrap(err, "Scanner.Scan")
-	}
 	return chunks, nil
 }
 
-func lmdbPutBuffer(tx *mdb.Tx, dto *BufferDto) error {
+func badgerPutBuffer(tx *mdb.Tx, dto *BufferDto) error {
 	tpl := tuple.Tuple([]tuple.Element{BufferTable})
 
 	key := tpl.Pack()
@@ -106,7 +101,7 @@ func lmdbPutBuffer(tx *mdb.Tx, dto *BufferDto) error {
 	return nil
 }
 
-func lmdbGetBuffer(tx *mdb.Tx) (*BufferDto, error) {
+func badgerGetBuffer(tx *mdb.Tx) (*BufferDto, error) {
 
 	tpl := tuple.Tuple([]tuple.Element{BufferTable})
 	key := tpl.Pack()
@@ -126,7 +121,7 @@ func lmdbGetBuffer(tx *mdb.Tx) (*BufferDto, error) {
 	return dto, nil
 }
 
-func lmdbIndexPosition(tx *mdb.Tx, stream string, k uint64, pos int64) error {
+func badgerIndexPosition(tx *mdb.Tx, stream string, k uint64, pos int64) error {
 	tpl := tuple.Tuple([]tuple.Element{MetaTable, stream, k})
 	key := tpl.Pack()
 	var err error
@@ -140,7 +135,7 @@ func lmdbIndexPosition(tx *mdb.Tx, stream string, k uint64, pos int64) error {
 	return nil
 }
 
-func lmdbLookupPosition(tx *mdb.Tx, stream string, k uint64) (int64, error) {
+func badgerLookupPosition(tx *mdb.Tx, stream string, k uint64) (int64, error) {
 
 	tpl := tuple.Tuple([]tuple.Element{MetaTable, stream, k})
 	key := tpl.Pack()
@@ -156,12 +151,12 @@ func lmdbLookupPosition(tx *mdb.Tx, stream string, k uint64) (int64, error) {
 	return pos, nil
 }
 
-func lmdbSetCellarMeta(tx *mdb.Tx, m *MetaDto) error {
+func badgerSetCellarMeta(tx *mdb.Tx, m *MetaDto) error {
 	key := mdb.CreateKey(CellarTable)
 	return tx.PutProto(key, m)
 }
 
-func lmdbGetCellarMeta(tx *mdb.Tx) (*MetaDto, error) {
+func badgerGetCellarMeta(tx *mdb.Tx) (*MetaDto, error) {
 
 	key := mdb.CreateKey(CellarTable)
 	dto := &MetaDto{}

@@ -7,7 +7,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/abdullin/mdb"
+	"github.com/lheiskan/mdb"
 	"github.com/pkg/errors"
 )
 
@@ -59,10 +59,10 @@ func (r *Reader) ReadDB(op mdb.TxOp) error {
 
 func (r *Reader) Scan(op ReadOp) error {
 
-	var db *mdb.DB
 	var err error
-
+	var db *mdb.DB
 	cfg := mdb.NewConfig()
+
 	if db, err = mdb.New(r.Folder, cfg); err != nil {
 		return errors.Wrap(err, "mdb.New")
 	}
@@ -78,14 +78,14 @@ func (r *Reader) Scan(op ReadOp) error {
 
 	err = db.Read(func(tx *mdb.Tx) error {
 		var err error
-		if b, err = lmdbGetBuffer(tx); err != nil {
-			return errors.Wrap(err, "lmdbGetBuffer")
+		if b, err = badgerGetBuffer(tx); err != nil {
+			return errors.Wrap(err, "badgerGetBuffer")
 		}
-		if _, err = lmdbGetCellarMeta(tx); err != nil {
-			return errors.Wrap(err, "lmdbGetCellarMeta")
+		if _, err = badgerGetCellarMeta(tx); err != nil {
+			return errors.Wrap(err, "badgerGetCellarMeta")
 		}
-		if chunks, err = lmdbListChunks(tx); err != nil {
-			return errors.Wrap(err, "lmdbListChunks")
+		if chunks, err = badgerListChunks(tx); err != nil {
+			return errors.Wrap(err, "badgerListChunks")
 		}
 		return nil
 

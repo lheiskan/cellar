@@ -7,7 +7,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/abdullin/mdb"
+	"github.com/lheiskan/mdb"
 	"github.com/pkg/errors"
 )
 
@@ -28,12 +28,10 @@ func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) 
 	var db *mdb.DB
 	var err error
 
+	//cfg := badger.DefaultOptions(folder)
 	cfg := mdb.NewConfig()
-	// make sure we are writing sync
-	cfg.EnvFlags = 0
-
 	if db, err = mdb.New(folder, cfg); err != nil {
-		return nil, errors.Wrap(err, "mdb.New")
+		return nil, errors.Wrap(err, "badger.New")
 	}
 
 	var meta *MetaDto
@@ -43,8 +41,8 @@ func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) 
 		var err error
 
 		var dto *BufferDto
-		if dto, err = lmdbGetBuffer(tx); err != nil {
-			return errors.Wrap(err, "lmdbGetBuffer")
+		if dto, err = badgerGetBuffer(tx); err != nil {
+			return errors.Wrap(err, "badgerGetBuffer")
 		}
 
 		if dto == nil {
@@ -57,8 +55,8 @@ func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) 
 			return errors.Wrap(err, "openBuffer")
 		}
 
-		if meta, err = lmdbGetCellarMeta(tx); err != nil {
-			return errors.Wrap(err, "lmdbGetCellarMeta")
+		if meta, err = badgerGetCellarMeta(tx); err != nil {
+			return errors.Wrap(err, "badgerGetCellarMeta")
 		}
 		return nil
 	})
@@ -140,8 +138,8 @@ func createBuffer(tx *mdb.Tx, startPos int64, maxSize int64, folder string) (*Bu
 		return nil, errors.Wrapf(err, "openBuffer %s", folder)
 	}
 
-	if err = lmdbPutBuffer(tx, dto); err != nil {
-		return nil, errors.Wrap(err, "lmdbPutBuffer")
+	if err = badgerPutBuffer(tx, dto); err != nil {
+		return nil, errors.Wrap(err, "badgerPutBuffer")
 	}
 	return buf, nil
 
@@ -168,8 +166,8 @@ func (w *Writer) SealTheBuffer() error {
 
 	err = w.db.Update(func(tx *mdb.Tx) error {
 
-		if err = lmdbAddChunk(tx, dto.StartPos, dto); err != nil {
-			return errors.Wrap(err, "lmdbAddChunk")
+		if err = badgerAddChunk(tx, dto.StartPos, dto); err != nil {
+			return errors.Wrap(err, "badgerAddChunk")
 		}
 
 		if newBuffer, err = createBuffer(tx, newStartPos, w.maxBufferSize, w.folder); err != nil {
@@ -215,7 +213,7 @@ func (w *Writer) UpdateDB(op mdb.TxOp) error {
 
 func (w *Writer) PutUserCheckpoint(name string, pos int64) error {
 	return w.db.Update(func(tx *mdb.Tx) error {
-		return lmdbPutUserCheckpoint(tx, name, pos)
+		return badgerPutUserCheckpoint(tx, name, pos)
 	})
 }
 
@@ -223,7 +221,7 @@ func (w *Writer) GetUserCheckpoint(name string) (int64, error) {
 
 	var pos int64
 	err := w.db.Read(func(tx *mdb.Tx) error {
-		p, e := lmdbGetUserCheckpoint(tx, name)
+		p, e := badgerGetUserCheckpoint(tx, name)
 		if e != nil {
 			return e
 		}
@@ -248,8 +246,8 @@ func (w *Writer) Checkpoint() (int64, error) {
 	err = w.db.Update(func(tx *mdb.Tx) error {
 		var err error
 
-		if err = lmdbPutBuffer(tx, dto); err != nil {
-			return errors.Wrap(err, "lmdbPutBuffer")
+		if err = badgerPutBuffer(tx, dto); err != nil {
+			return errors.Wrap(err, "badgerPutBuffer")
 		}
 
 		meta := &MetaDto{
@@ -257,8 +255,8 @@ func (w *Writer) Checkpoint() (int64, error) {
 			MaxValSize: w.maxValSize,
 		}
 
-		if err = lmdbSetCellarMeta(tx, meta); err != nil {
-			return errors.Wrap(err, "lmdbSetCellarMeta")
+		if err = badgerSetCellarMeta(tx, meta); err != nil {
+			return errors.Wrap(err, "badgerSetCellarMeta")
 		}
 		return nil
 
