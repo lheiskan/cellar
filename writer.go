@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 
+	"github.com/abdullin/lex-go/subspace"
 	"github.com/lheiskan/mdb"
 	"github.com/pkg/errors"
 )
@@ -20,33 +21,26 @@ type Writer struct {
 	maxBufferSize int64
 	key           []byte
 	encodingBuf   []byte
+	subspace      subspace.Subspace
 }
 
-func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) {
+// NewWriter
+func NewWriter(DB *mdb.DB, folder string, maxBufferSize int64, key []byte, subspace subspace.Subspace) (*Writer, error) {
 	ensureFolder(folder)
-
-	var db *mdb.DB
-	var err error
-
-	//cfg := badger.DefaultOptions(folder)
-	cfg := mdb.NewConfig()
-	if db, err = mdb.New(folder, cfg); err != nil {
-		return nil, errors.Wrap(err, "badger.New")
-	}
 
 	var meta *MetaDto
 	var b *Buffer
 
-	err = db.Update(func(tx *mdb.Tx) error {
+	err := DB.Update(func(tx *mdb.Tx) error {
 		var err error
 
 		var dto *BufferDto
-		if dto, err = badgerGetBuffer(tx); err != nil {
+		if dto, err = badgerGetBuffer(subspace, tx); err != nil {
 			return errors.Wrap(err, "badgerGetBuffer")
 		}
 
 		if dto == nil {
-			if b, err = createBuffer(tx, 0, maxBufferSize, folder); err != nil {
+			if b, err = createBuffer(subspace, tx, 0, maxBufferSize, folder); err != nil {
 				return errors.Wrap(err, "SetNewBuffer")
 			}
 			return nil
@@ -55,10 +49,10 @@ func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) 
 			return errors.Wrap(err, "openBuffer")
 		}
 
-		if meta, err = badgerGetCellarMeta(tx); err != nil {
+		if meta, err = badgerGetCellarMeta(subspace, tx); err != nil {
 			return errors.Wrap(err, "badgerGetCellarMeta")
 		}
-		return nil
+		return err
 	})
 
 	if err != nil {
@@ -70,7 +64,7 @@ func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) 
 		maxBufferSize: maxBufferSize,
 		key:           key,
 		encodingBuf:   make([]byte, binary.MaxVarintLen64),
-		db:            db,
+		db:            DB,
 		b:             b,
 	}
 
@@ -85,8 +79,10 @@ func NewWriter(folder string, maxBufferSize int64, key []byte) (*Writer, error) 
 
 func (w *Writer) VolatilePos() int64 {
 	if w.b != nil {
+		log.Println("Volatile position", w.b.startPos, w.b.pos)
 		return w.b.startPos + w.b.pos
 	}
+	log.Println("Volatile position is 0")
 	return 0
 }
 
@@ -98,8 +94,13 @@ func (w *Writer) Append(data []byte) (pos int64, err error) {
 	totalSize := n + len(data)
 
 	if !w.b.fits(int64(totalSize)) {
-		if err = w.SealTheBuffer(); err != nil {
-			return 0, errors.Wrap(err, "SealTheBuffer")
+		if w.b.pos == 0 {
+			log.Println("Value exceeds max size. Writing value into the file anyway")
+		} else {
+			log.Println("Buffer max size reached, sealing buffer", w.b.pos, totalSize, w.b.maxBytes)
+			if err = w.SealTheBuffer(); err != nil {
+				return 0, errors.Wrap(err, "SealTheBuffer")
+			}
 		}
 	}
 
@@ -122,7 +123,7 @@ func (w *Writer) Append(data []byte) (pos int64, err error) {
 	return pos, nil
 }
 
-func createBuffer(tx *mdb.Tx, startPos int64, maxSize int64, folder string) (*Buffer, error) {
+func createBuffer(subspace subspace.Subspace, tx *mdb.Tx, startPos int64, maxSize int64, folder string) (*Buffer, error) {
 	name := fmt.Sprintf("%012d", startPos)
 	dto := &BufferDto{
 		Pos:      0,
@@ -138,7 +139,7 @@ func createBuffer(tx *mdb.Tx, startPos int64, maxSize int64, folder string) (*Bu
 		return nil, errors.Wrapf(err, "openBuffer %s", folder)
 	}
 
-	if err = badgerPutBuffer(tx, dto); err != nil {
+	if err = badgerPutBuffer(subspace, tx, dto); err != nil {
 		return nil, errors.Wrap(err, "badgerPutBuffer")
 	}
 	return buf, nil
@@ -166,11 +167,11 @@ func (w *Writer) SealTheBuffer() error {
 
 	err = w.db.Update(func(tx *mdb.Tx) error {
 
-		if err = badgerAddChunk(tx, dto.StartPos, dto); err != nil {
+		if err = badgerAddChunk(w.subspace, tx, dto.StartPos, dto); err != nil {
 			return errors.Wrap(err, "badgerAddChunk")
 		}
 
-		if newBuffer, err = createBuffer(tx, newStartPos, w.maxBufferSize, w.folder); err != nil {
+		if newBuffer, err = createBuffer(w.subspace, tx, newStartPos, w.maxBufferSize, w.folder); err != nil {
 			return errors.Wrap(err, "createBuffer")
 		}
 		return nil
@@ -196,7 +197,9 @@ func (w *Writer) SealTheBuffer() error {
 func (w *Writer) Close() error {
 
 	// TODO: flush, checkpoint and close current buffer
-	return w.db.Close()
+	// NOTE: db is shared so no close per writer
+	//return w.db.Close()
+	return nil
 }
 
 // ReadDB allows to execute read transaction against
@@ -213,7 +216,7 @@ func (w *Writer) UpdateDB(op mdb.TxOp) error {
 
 func (w *Writer) PutUserCheckpoint(name string, pos int64) error {
 	return w.db.Update(func(tx *mdb.Tx) error {
-		return badgerPutUserCheckpoint(tx, name, pos)
+		return badgerPutUserCheckpoint(w.subspace, tx, name, pos)
 	})
 }
 
@@ -221,7 +224,7 @@ func (w *Writer) GetUserCheckpoint(name string) (int64, error) {
 
 	var pos int64
 	err := w.db.Read(func(tx *mdb.Tx) error {
-		p, e := badgerGetUserCheckpoint(tx, name)
+		p, e := badgerGetUserCheckpoint(w.subspace, tx, name)
 		if e != nil {
 			return e
 		}
@@ -246,7 +249,7 @@ func (w *Writer) Checkpoint() (int64, error) {
 	err = w.db.Update(func(tx *mdb.Tx) error {
 		var err error
 
-		if err = badgerPutBuffer(tx, dto); err != nil {
+		if err = badgerPutBuffer(w.subspace, tx, dto); err != nil {
 			return errors.Wrap(err, "badgerPutBuffer")
 		}
 
@@ -255,7 +258,7 @@ func (w *Writer) Checkpoint() (int64, error) {
 			MaxValSize: w.maxValSize,
 		}
 
-		if err = badgerSetCellarMeta(tx, meta); err != nil {
+		if err = badgerSetCellarMeta(w.subspace, tx, meta); err != nil {
 			return errors.Wrap(err, "badgerSetCellarMeta")
 		}
 		return nil

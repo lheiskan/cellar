@@ -149,6 +149,7 @@ func (b *Buffer) compress(key []byte) (dto *ChunkDto, err error) {
 	}
 
 	// copy chunk to the chain
+	log.Println("CopyN", b.stream.Name(), b.pos)
 	if _, err = io.CopyN(zw, b.stream, b.pos); err != nil {
 		return nil, errors.Wrap(err, "CopyN")
 	}

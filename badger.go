@@ -6,7 +6,8 @@ import (
 
 	"github.com/dgraph-io/badger"
 	proto "github.com/golang/protobuf/proto"
-	"github.com/lheiskan/lex-go/tuple"
+	"github.com/abdullin/lex-go/subspace"
+	"github.com/abdullin/lex-go/tuple"
 	"github.com/lheiskan/mdb"
 	"github.com/pkg/errors"
 )
@@ -20,8 +21,8 @@ const (
 	UserCheckpointTable byte = 6
 )
 
-func badgerPutUserCheckpoint(tx *mdb.Tx, name string, pos int64) error {
-	key := mdb.CreateKey(UserCheckpointTable, name)
+func badgerPutUserCheckpoint(subspace subspace.Subspace, tx *mdb.Tx, name string, pos int64) error {
+	key := mdb.CreateKey(subspace, UserCheckpointTable, name)
 
 	value := make([]byte, 8)
 	binary.LittleEndian.PutUint64(value, uint64(pos))
@@ -34,21 +35,22 @@ func badgerPutUserCheckpoint(tx *mdb.Tx, name string, pos int64) error {
 	return nil
 }
 
-func badgerGetUserCheckpoint(tx *mdb.Tx, name string) (int64, error) {
+func badgerGetUserCheckpoint(subspace subspace.Subspace, tx *mdb.Tx, name string) (int64, error) {
 
-	key := mdb.CreateKey(UserCheckpointTable, name)
+	key := mdb.CreateKey(subspace, UserCheckpointTable, name)
 	value, err := tx.Get(key)
-	if err == badger.ErrKeyNotFound {
-		return 0, nil
-	}
 	if err != nil {
 		return 0, errors.Wrap(err, "Get")
 	}
-	return int64(binary.LittleEndian.Uint64(value)), nil
+	if value == nil {
+		return 0, nil
+	}
+	v := int64(binary.LittleEndian.Uint64(value))
+	return v, nil
 }
 
-func badgerAddChunk(tx *mdb.Tx, chunkStartPos int64, dto *ChunkDto) error {
-	key := mdb.CreateKey(ChunkTable, chunkStartPos)
+func badgerAddChunk(subspace subspace.Subspace, tx *mdb.Tx, chunkStartPos int64, dto *ChunkDto) error {
+	key := mdb.CreateKey(subspace, ChunkTable, chunkStartPos)
 
 	if err := tx.PutProto(key, dto); err != nil {
 		return errors.Wrap(err, "PutProto")
@@ -58,9 +60,9 @@ func badgerAddChunk(tx *mdb.Tx, chunkStartPos int64, dto *ChunkDto) error {
 	return nil
 }
 
-func badgerListChunks(tx *mdb.Tx) ([]*ChunkDto, error) {
+func badgerListChunks(subspace subspace.Subspace, tx *mdb.Tx) ([]*ChunkDto, error) {
 
-	prefix := mdb.CreateKey(ChunkTable)
+	prefix := mdb.CreateKey(subspace, ChunkTable)
 
 	var chunks []*ChunkDto
 	opts := badger.DefaultIteratorOptions
@@ -85,8 +87,8 @@ func badgerListChunks(tx *mdb.Tx) ([]*ChunkDto, error) {
 	return chunks, nil
 }
 
-func badgerPutBuffer(tx *mdb.Tx, dto *BufferDto) error {
-	tpl := tuple.Tuple([]tuple.Element{BufferTable})
+func badgerPutBuffer(subspace subspace.Subspace, tx *mdb.Tx, dto *BufferDto) error {
+	tpl := tuple.Tuple([]tuple.Element{subspace, BufferTable})
 
 	key := tpl.Pack()
 	var val []byte
@@ -101,14 +103,17 @@ func badgerPutBuffer(tx *mdb.Tx, dto *BufferDto) error {
 	return nil
 }
 
-func badgerGetBuffer(tx *mdb.Tx) (*BufferDto, error) {
+func badgerGetBuffer(subspace subspace.Subspace, tx *mdb.Tx) (*BufferDto, error) {
 
-	tpl := tuple.Tuple([]tuple.Element{BufferTable})
+	tpl := tuple.Tuple([]tuple.Element{subspace, BufferTable})
 	key := tpl.Pack()
 	var data []byte
 	var err error
 
 	if data, err = tx.Get(key); err != nil {
+		if err == badger.ErrKeyNotFound {
+			return nil, nil
+		}
 		return nil, errors.Wrap(err, "tx.Get")
 	}
 	if data == nil {
@@ -121,8 +126,8 @@ func badgerGetBuffer(tx *mdb.Tx) (*BufferDto, error) {
 	return dto, nil
 }
 
-func badgerIndexPosition(tx *mdb.Tx, stream string, k uint64, pos int64) error {
-	tpl := tuple.Tuple([]tuple.Element{MetaTable, stream, k})
+func badgerIndexPosition(subspace subspace.Subspace, tx *mdb.Tx, stream string, k uint64, pos int64) error {
+	tpl := tuple.Tuple([]tuple.Element{subspace, MetaTable, stream, k})
 	key := tpl.Pack()
 	var err error
 
@@ -135,9 +140,9 @@ func badgerIndexPosition(tx *mdb.Tx, stream string, k uint64, pos int64) error {
 	return nil
 }
 
-func badgerLookupPosition(tx *mdb.Tx, stream string, k uint64) (int64, error) {
+func badgerLookupPosition(subspace subspace.Subspace, tx *mdb.Tx, stream string, k uint64) (int64, error) {
 
-	tpl := tuple.Tuple([]tuple.Element{MetaTable, stream, k})
+	tpl := tuple.Tuple([]tuple.Element{subspace, MetaTable, stream, k})
 	key := tpl.Pack()
 	var err error
 
@@ -151,14 +156,14 @@ func badgerLookupPosition(tx *mdb.Tx, stream string, k uint64) (int64, error) {
 	return pos, nil
 }
 
-func badgerSetCellarMeta(tx *mdb.Tx, m *MetaDto) error {
-	key := mdb.CreateKey(CellarTable)
+func badgerSetCellarMeta(subspace subspace.Subspace, tx *mdb.Tx, m *MetaDto) error {
+	key := mdb.CreateKey(subspace, CellarTable)
 	return tx.PutProto(key, m)
 }
 
-func badgerGetCellarMeta(tx *mdb.Tx) (*MetaDto, error) {
+func badgerGetCellarMeta(subspace subspace.Subspace, tx *mdb.Tx) (*MetaDto, error) {
 
-	key := mdb.CreateKey(CellarTable)
+	key := mdb.CreateKey(subspace, CellarTable)
 	dto := &MetaDto{}
 	var err error
 

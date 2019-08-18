@@ -8,7 +8,11 @@ import (
 	rnd "math/rand"
 	"testing"
 	"time"
+
+	"github.com/lheiskan/mdb"
+	"github.com/abdullin/lex-go/subspace"
 )
+
 
 func genRandBytes(size int) []byte {
 
@@ -41,14 +45,28 @@ func TestWithClosing(t *testing.T) {
 
 	var w *Writer
 	var err error
+	var db *mdb.DB
+	subspace := subspace.Sub("project1")
+
 
 	folder := getFolder()
 	key := genRandBytes(16)
-	w, err = NewWriter(folder, 1000, key)
+	cfg := mdb.NewConfig()
+	if db, err = mdb.New(folder, cfg); err != nil {
+		assert(t, err, "mdb.New")
+	}
+
+	defer db.Close()
+	w, err = NewWriter(db, folder, 1000, key, subspace)
+
+	assert(t, err, "NewWriter")
 
 	defer closeWriter(t, w)
 
-	assert(t, err, "NewWriter")
+	if w != nil {
+		log.Printf("error: %s, %d", err, w.maxKeySize)
+	}
+	log.Printf("error: %s", err)
 
 	var valuesWritten int
 
@@ -74,12 +92,13 @@ func TestWithClosing(t *testing.T) {
 
 		assert(t, err, "Closing")
 
-		w, err = NewWriter(folder, 1000, key)
+		log.Printf("NEW WRITER %d", j)
+		w, err = NewWriter(db, folder, 1000, key, subspace)
 		assert(t, err, "Opening writer")
 
 	}
 
-	reader := NewReader(folder, key)
+	reader := NewReader(subspace, db, folder, key)
 
 	var valuesRead int
 	var n int
@@ -119,15 +138,25 @@ func assertCheckpoint(t *testing.T, w *Writer) {
 
 func TestUserCheckpoints(t *testing.T) {
 
+	subspace := subspace.Sub("project1")
 	var (
 		w   *Writer
 		err error
 		pos int64
 	)
 
+	var db *mdb.DB
+
 	folder := getFolder()
 	key := genRandBytes(16)
-	w, err = NewWriter(folder, 1000, key)
+	cfg := mdb.NewConfig()
+	if db, err = mdb.New(folder, cfg); err != nil {
+		assert(t, err, "mdb.New")
+	}
+
+	defer db.Close()
+
+	w, err = NewWriter(db, folder, 1000, key, subspace)
 
 	defer closeWriter(t, w)
 
@@ -135,10 +164,10 @@ func TestUserCheckpoints(t *testing.T) {
 
 	pos, err = w.GetUserCheckpoint("custom")
 	assert(t, err, "GetCheckpoint")
+	log.Println("POsition", pos)
 	if pos != 0 {
 		t.Fatal("Checkpoint should be 0")
 	}
-
 	assert(t, w.PutUserCheckpoint("custom", 42), "PutCheckpoint")
 
 	pos, err = w.GetUserCheckpoint("custom")
@@ -146,20 +175,27 @@ func TestUserCheckpoints(t *testing.T) {
 	if pos != 42 {
 		t.Fatal("Checkpoint should be 42")
 	}
-
 }
 
 func TestSingleChunkDB(t *testing.T) {
 
+	subspace := subspace.Sub("Project1")
 	log.Print("Starting single chunk")
 	defer log.Print("Single chunk over")
 
 	var w *Writer
 	var err error
+	var db *mdb.DB
 
 	folder := getFolder()
 	key := genRandBytes(16)
-	w, err = NewWriter(folder, 1000, key)
+	cfg := mdb.NewConfig()
+	if db, err = mdb.New(folder, cfg); err != nil {
+		assert(t, err, "mdb.New")
+	}
+
+	defer db.Close()
+	w, err = NewWriter(db, folder, 1000, key, subspace)
 
 	defer closeWriter(t, w)
 
@@ -179,7 +215,7 @@ func TestSingleChunkDB(t *testing.T) {
 	var valuesRead int
 	var n int
 
-	reader := NewReader(folder, key)
+	reader := NewReader(subspace, db, folder, key)
 
 	err = reader.Scan(func(pos *ReaderInfo, s []byte) error {
 
@@ -206,12 +242,20 @@ func TestReadingWithOffset(t *testing.T) {
 
 func TestSimpleKey(t *testing.T) {
 
+	subspace := subspace.Sub("Project1")
 	var w *Writer
 	var err error
 
+	var db *mdb.DB
 	folder := getFolder()
 	key := genRandBytes(16)
-	w, err = NewWriter(folder, 1000, key)
+	cfg := mdb.NewConfig()
+	if db, err = mdb.New(folder, cfg); err != nil {
+		assert(t, err, "mdb.New")
+	}
+
+	defer db.Close()
+	w, err = NewWriter(db, folder, 1000, key, subspace)
 
 	defer closeWriter(t, w)
 
@@ -227,7 +271,7 @@ func TestSimpleKey(t *testing.T) {
 	}
 	assertCheckpoint(t, w)
 
-	reader := NewReader(folder, key)
+	reader := NewReader(subspace, db, folder, key)
 	var valuesRead int
 	var n int
 
@@ -258,24 +302,42 @@ type rec struct {
 
 func TestFuzz(t *testing.T) {
 
+	subspace := subspace.Sub("Project1")
+	var db *mdb.DB
+	var err error
+
 	seed := time.Now().UnixNano()
 	r := rnd.New(rnd.NewSource(seed))
 
 	folder := getFolder()
 	maxIterations := 1000
 	maxValueLength := r.Intn(1024*128) + 10
-	maxBufferSize := r.Intn(maxValueLength*maxIterations/2) + 1
+	maxBufferSize := (maxValueLength * maxIterations / 2) + 4
 	key := genRandBytes(16)
+
+	log.Println("MaxValeLen, MaxBufferSize", maxValueLength, maxBufferSize)
+	cfg := mdb.NewConfig()
+	if db, err = mdb.New(folder, cfg); err != nil {
+		assert(t, err, "mdb.New")
+	}
+
+	defer db.Close()
 
 	t.Logf("maxVal %d; maxBuffer %d; seed %d", maxValueLength, maxBufferSize, seed)
 
 	var writer *Writer
-	var err error
 
 	var recs []rec
 
 	for i := 0; i <= maxIterations; i++ {
-		if r.Intn(17) == 13 || i == maxIterations {
+		if (r.Intn(17) == 13 && i != 0) || i == maxIterations {
+
+			if i == maxIterations {
+				log.Println("i=maxIterations. checkpointing and writer recycle", writer)
+			} else {
+				log.Println("RANDOM checkpoint and writer recycle ", writer, i, recs)
+			}
+
 			if writer != nil {
 				assertCheckpoint(t, writer)
 				writer.Checkpoint()
@@ -287,14 +349,18 @@ func TestFuzz(t *testing.T) {
 
 			recordsSaved := len(recs)
 
-			reader := NewReader(folder, key)
+			reader := NewReader(subspace, db, folder, key)
+			//reader.Flags = reader.Flags & RF_PrintChunks
 			recordPos := 0
 			if r.Intn(5) > 2 && recordsSaved > 0 {
 				// pick a random pos to scan from
 				recordPos = r.Intn(recordsSaved)
+				log.Println("Scanning starting from random record", recordPos, recs[recordPos])
 			}
 
+			log.Println("len(recs), recordPos", len(recs), recordPos)
 			r := recs[recordPos]
+			log.Println("xxx len(recs), recordPos", len(recs), recordPos)
 
 			reader.StartPos = r.pos
 			scanSeed := r.seed
@@ -323,16 +389,21 @@ func TestFuzz(t *testing.T) {
 		}
 
 		if writer == nil {
-			writer, err = NewWriter(folder, int64(maxBufferSize), key)
+			writer, err = NewWriter(db, folder, int64(maxBufferSize), key, subspace)
 			assert(t, err, "new writer")
 		}
 
 		valSize := r.Intn(maxValueLength)
 
 		val := genSeedBytes(valSize, i)
+		if len(val) != valSize {
+			panic("BAD val size")
+		}
 		pos := writer.VolatilePos()
-		_, err = writer.Append(val)
+		var xpos int64
+		xpos, err = writer.Append(val)
 
+		log.Println("Appended stuff, volatile pos, xpos", pos, xpos, valSize)
 		recs = append(recs, rec{
 			pos:  pos,
 			seed: i,

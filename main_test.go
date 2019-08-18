@@ -1,12 +1,19 @@
 package cellar
 
 import (
+	"io/ioutil"
 	"os"
 	"testing"
 )
 
 func getFolder() string {
-	return NewTempFolder("cellar")
+	dir, err := ioutil.TempDir("testdata", "cellar")
+	if err != nil {
+		panic(err)
+	}
+	return dir
+	//return NewTempFolder("cellar")
+	//return "testdata/cellar"
 }
 
 func TestMain(m *testing.M) {

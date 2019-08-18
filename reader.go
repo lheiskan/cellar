@@ -8,6 +8,7 @@ import (
 	"path"
 
 	"github.com/lheiskan/mdb"
+	"github.com/abdullin/lex-go/subspace"
 	"github.com/pkg/errors"
 )
 
@@ -20,16 +21,18 @@ const (
 )
 
 type Reader struct {
+	DB          *mdb.DB
 	Folder      string
 	Key         []byte
 	Flags       ReadFlag
 	StartPos    int64
 	EndPos      int64
 	LimitChunks int
+	Subspace subspace.Subspace
 }
 
-func NewReader(folder string, key []byte) *Reader {
-	return &Reader{folder, key, RF_LoadBuffer, 0, 0, 0}
+func NewReader(subspace subspace.Subspace, db *mdb.DB, folder string, key []byte) *Reader {
+	return &Reader{db, folder, key, RF_LoadBuffer, 0, 0, 0, subspace}
 }
 
 type ReaderInfo struct {
@@ -44,30 +47,12 @@ type ReaderInfo struct {
 type ReadOp func(pos *ReaderInfo, data []byte) error
 
 func (r *Reader) ReadDB(op mdb.TxOp) error {
-	var db *mdb.DB
-	var err error
-
-	cfg := mdb.NewConfig()
-	if db, err = mdb.New(r.Folder, cfg); err != nil {
-		return errors.Wrap(err, "mdb.New")
-	}
-
-	defer db.Close()
-
-	return db.Read(op)
+	return r.DB.Read(op)
 }
 
 func (r *Reader) Scan(op ReadOp) error {
 
 	var err error
-	var db *mdb.DB
-	cfg := mdb.NewConfig()
-
-	if db, err = mdb.New(r.Folder, cfg); err != nil {
-		return errors.Wrap(err, "mdb.New")
-	}
-
-	defer db.Close()
 
 	var b *BufferDto
 	// var meta *MetaDto
@@ -76,15 +61,15 @@ func (r *Reader) Scan(op ReadOp) error {
 	loadBuffer := (r.Flags & RF_LoadBuffer) == RF_LoadBuffer
 	printChunks := (r.Flags & RF_PrintChunks) == RF_PrintChunks
 
-	err = db.Read(func(tx *mdb.Tx) error {
+	err = r.DB.Read(func(tx *mdb.Tx) error {
 		var err error
-		if b, err = badgerGetBuffer(tx); err != nil {
+		if b, err = badgerGetBuffer(r.Subspace, tx); err != nil {
 			return errors.Wrap(err, "badgerGetBuffer")
 		}
-		if _, err = badgerGetCellarMeta(tx); err != nil {
+		if _, err = badgerGetCellarMeta(r.Subspace, tx); err != nil {
 			return errors.Wrap(err, "badgerGetCellarMeta")
 		}
-		if chunks, err = badgerListChunks(tx); err != nil {
+		if chunks, err = badgerListChunks(r.Subspace, tx); err != nil {
 			return errors.Wrap(err, "badgerListChunks")
 		}
 		return nil
